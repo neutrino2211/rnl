@@ -439,9 +439,9 @@ export function render(element, container) {
     if (props) {
         for (const [key, value] of Object.entries(props)) {
             if (key === 'children') continue;
-            if (key.startsWith('on')) {
-                const eventName = key.slice(2).toLowerCase();
-                RNL.setCallback?.(handle, eventName, value);
+            if (key.startsWith('on') && typeof value === 'function') {
+                // Keep the original event name (onClick, onChange, etc)
+                RNL.setCallback?.(handle, key, value);
             } else if (key === 'style' && typeof value === 'object') {
                 for (const [styleProp, styleVal] of Object.entries(value)) {
                     RNL.setAttribute?.(handle, `style.${styleProp}`, String(styleVal));

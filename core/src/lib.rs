@@ -9,6 +9,7 @@
 pub mod runtime;
 pub mod registry;
 pub mod bridge;
+pub mod callbacks;
 pub mod ffi;
 
 use std::ffi::{c_char, c_int, c_void, CStr};

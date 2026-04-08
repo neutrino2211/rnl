@@ -131,17 +131,40 @@ impl NativeBridge {
         }
     }
 
-    fn set_callback(&mut self, handle: i64, name: &str) {
-        // In a full implementation, we would:
-        // 1. Store the callback in a way that QuickJS can invoke it later
-        // 2. Pass a native callback pointer to the platform
-        // 3. When the native callback fires, invoke the JS callback
-        
-        // For now, just log it
-        log::debug!("setCallback({}, {}) - stub", handle, name);
-        
-        // We'd store callback reference here
-        self.callbacks.insert((handle, name.to_string()), 0);
+    fn set_callback(&mut self, handle: i64, name: &str, callback_id: u64) {
+        let widget = match self.widgets.get(&handle) {
+            Some(w) => w,
+            None => {
+                log::warn!("setCallback: unknown handle {}", handle);
+                return;
+            }
+        };
+
+        if widget.type_name == "__text__" || widget.type_name == "__root__" {
+            return;
+        }
+
+        let factory = match Registry::global().get(&widget.type_name) {
+            Some(f) => f,
+            None => {
+                log::warn!("setCallback: unknown type '{}'", widget.type_name);
+                return;
+            }
+        };
+
+        log::debug!("setCallback({}, {}, callback_id={})", handle, name, callback_id);
+
+        // Store the callback ID for this (handle, name) pair
+        self.callbacks.insert((handle, name.to_string()), callback_id as usize);
+
+        // Pass the callback ID to the native element
+        // The callback ID acts as a "pointer" that the native code can use
+        // to invoke rnl_invoke_callback later
+        if let Some(set_cb) = factory.set_callback {
+            let name_c = CString::new(name).unwrap();
+            // Pass callback_id as the callback pointer
+            set_cb(widget.ptr, name_c.as_ptr(), callback_id as *mut c_void);
+        }
     }
 
     fn append_child(&mut self, parent_handle: i64, child_handle: i64) {
@@ -301,7 +324,12 @@ pub fn set_attribute(handle: i64, name: &str, value: &str) {
 }
 
 pub fn set_callback(handle: i64, name: &str) {
-    get_bridge().lock().set_callback(handle, name)
+    // Legacy stub - use set_callback_with_id instead
+    log::warn!("set_callback called without callback_id");
+}
+
+pub fn set_callback_with_id(handle: i64, name: &str, callback_id: u64) {
+    get_bridge().lock().set_callback(handle, name, callback_id)
 }
 
 pub fn append_child(parent: i64, child: i64) {

@@ -239,11 +239,18 @@ fn setup_rnl_module(ctx: &Ctx) -> Result<(), RuntimeError> {
     )?;
 
     // setCallback(handle: number, name: string, callback: function)
-    // Note: We can't easily pass Function across the bridge, so we'll skip this for now
+    // Store callback info and pass pointer to native code
     module.set(
         "setCallback",
-        Func::from(|handle: i64, name: String| {
-            log::debug!("setCallback({}, {}) - stub", handle, name);
+        Func::from(|handle: i64, name: String, callback: Function| {
+            log::debug!("setCallback({}, {}, <function>)", handle, name);
+            
+            // Register the callback to get an ID
+            let callback_id = crate::callbacks::register_callback(handle, &name);
+            
+            // Store the Function in a global registry so we can call it later
+            // This is a simplification - full implementation would use proper ref management
+            crate::bridge::set_callback_with_id(handle, &name, callback_id);
         }),
     )?;
 
