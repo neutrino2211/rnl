@@ -1,0 +1,30 @@
+# cbindgen configuration for rnl.h generation
+
+language = "C"
+include_guard = "RNL_H"
+pragma_once = false
+cpp_compat = true
+usize_is_size_t = true
+
+[defines]
+"target_os = linux" = "RNL_LINUX"
+"target_os = macos" = "RNL_MACOS"
+"target_os = windows" = "RNL_WINDOWS"
+
+[export]
+include = []
+exclude = []
+prefix = "rnl_"
+
+[fn]
+rename_args = "SnakeCase"
+
+[struct]
+rename_fields = "SnakeCase"
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+
+[parse]
+parse_deps = false
+include = []

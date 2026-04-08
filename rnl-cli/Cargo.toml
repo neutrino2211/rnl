@@ -1,0 +1,28 @@
+[package]
+name = "rnl-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI for RNL (React Native Libre) framework"
+authors = ["Mainasara Tsowa <mainasara@neutrino.dev>"]
+license = "MIT"
+
+[[bin]]
+name = "rnl"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+handlebars = "5.1"
+anyhow = "1.0"
+colored = "2.1"
+walkdir = "2.4"
+rust-embed = "8.2"
+which = "6.0"
+
+[dev-dependencies]
+tempfile = "3.10"
+assert_cmd = "2.0"
+predicates = "3.1"
