@@ -14,15 +14,14 @@ path = "src/main.rs"
 # GTK4 bindings
 gtk4 = "0.9"
 
+# RNL Core (workspace dependency)
+rnl-core = { path = "../../core" }
+
 # Async runtime integration
 once_cell = "1.21"
 parking_lot = "0.12"
 log = "0.4"
 env_logger = "0.11"
-
-# For linking against librnl.a
-[build-dependencies]
-# None needed - we link via build.rs
 
 [features]
 default = []

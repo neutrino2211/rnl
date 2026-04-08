@@ -43,7 +43,8 @@ pub unsafe extern "C" fn rnl_main(
     argc: c_int,
     argv: *mut *mut c_char,
 ) -> c_int {
-    env_logger::init();
+    // Logger may already be initialized by the platform
+    let _ = env_logger::try_init();
     log::info!("RNL Core starting...");
 
     // Initialize runtime
