@@ -136,17 +136,20 @@ pub extern "C" fn rnl_platform_get_root_container() -> *mut c_void {
 pub extern "C" fn rnl_platform_run() -> c_int {
     log::info!("Starting GTK4 main loop...");
 
-    APP_STATE.with(|state| {
-        let state = state.borrow();
-        if let Some(app) = &state.app {
-            // Run with empty args - window is created in activate handler
-            app.run_with_args::<&str>(&[]);
-            0
-        } else {
-            log::error!("No application created");
-            1
-        }
-    })
+    // Clone the app out of the RefCell so we don't hold a borrow during run()
+    // (the activate callback needs to borrow APP_STATE)
+    let app = APP_STATE.with(|state| {
+        state.borrow().app.clone()
+    });
+
+    if let Some(app) = app {
+        // Run with empty args - window is created in activate handler
+        app.run_with_args::<&str>(&[]);
+        0
+    } else {
+        log::error!("No application created");
+        1
+    }
 }
 
 /// Quit the application
