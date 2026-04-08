@@ -62,6 +62,14 @@ extern "C" {
 int rnl_main(const char *bundle_path, int argc, char **argv);
 
 /**
+ * Execute a JS bundle (called by platform after window is ready)
+ *
+ * # Safety
+ * - bundle must be a valid C string
+ */
+int rnl_execute_bundle(const char *bundle);
+
+/**
  * Log a message from native code (routed to JS console)
  *
  * # Safety

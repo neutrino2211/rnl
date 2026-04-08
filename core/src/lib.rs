@@ -54,6 +54,7 @@ pub unsafe extern "C" fn rnl_main(
     extern "C" {
         fn rnl_platform_init();
         fn rnl_platform_create_window(title: *const c_char, width: i32, height: i32) -> c_int;
+        fn rnl_platform_set_bundle(bundle: *const c_char);
     }
     rnl_platform_init();
     log::info!("Platform initialized, {} elements registered", 
@@ -81,22 +82,43 @@ pub unsafe extern "C" fn rnl_main(
             })
     };
 
-    // Execute the bundle
-    {
-        let mut rt = runtime.lock();
-        if let Err(e) = rt.eval(&bundle_content, "<bundle>") {
-            log::error!("JS evaluation failed: {}", e);
-            return 1;
-        }
-    }
+    // Pass bundle to platform - it will execute after window is ready
+    let bundle_c = std::ffi::CString::new(bundle_content).unwrap();
+    rnl_platform_set_bundle(bundle_c.as_ptr());
 
-    log::info!("Bundle loaded, starting platform event loop");
+    log::info!("Bundle set, starting platform event loop");
 
     // Start platform event loop
     extern "C" {
         fn rnl_platform_run() -> c_int;
     }
     rnl_platform_run()
+}
+
+/// Execute a JS bundle (called by platform after window is ready)
+///
+/// # Safety
+/// - bundle must be a valid C string
+#[no_mangle]
+pub unsafe extern "C" fn rnl_execute_bundle(bundle: *const c_char) -> c_int {
+    if bundle.is_null() {
+        log::error!("rnl_execute_bundle: null bundle");
+        return 1;
+    }
+    
+    let bundle_content = CStr::from_ptr(bundle).to_string_lossy();
+    log::info!("Executing bundle ({} bytes)", bundle_content.len());
+    
+    let runtime = init_runtime();
+    let mut rt = runtime.lock();
+    
+    if let Err(e) = rt.eval(&bundle_content, "<bundle>") {
+        log::error!("JS evaluation failed: {}", e);
+        return 1;
+    }
+    
+    log::info!("Bundle executed successfully");
+    0
 }
 
 /// Log a message from native code (routed to JS console)

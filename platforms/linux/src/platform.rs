@@ -24,6 +24,13 @@ struct AppState {
     app: Option<Application>,
     main_window: Option<ApplicationWindow>,
     root_container: Option<GtkBox>,
+    pending_bundle: Option<String>,
+}
+
+// Import from core to set root and run bundle
+extern "C" {
+    fn rnl_set_root_container(root: *mut std::ffi::c_void);
+    fn rnl_execute_bundle(bundle: *const std::ffi::c_char) -> std::ffi::c_int;
 }
 
 impl Default for AppState {
@@ -32,6 +39,7 @@ impl Default for AppState {
             app: None,
             main_window: None,
             root_container: None,
+            pending_bundle: None,
         }
     }
 }
@@ -102,12 +110,28 @@ pub extern "C" fn rnl_platform_create_window(
             let root = GtkBox::new(Orientation::Vertical, 0);
             window.set_child(Some(&root));
 
-            // Store in thread-local (we need to do this from within the callback)
-            APP_STATE.with(|s| {
+            // Tell the core about the root container
+            let root_ptr = root.as_ptr() as *mut std::ffi::c_void;
+            unsafe {
+                rnl_set_root_container(root_ptr);
+            }
+
+            // Store in thread-local and get pending bundle
+            let bundle = APP_STATE.with(|s| {
                 let mut s = s.borrow_mut();
                 s.main_window = Some(window.clone());
                 s.root_container = Some(root);
+                s.pending_bundle.take()
             });
+
+            // Execute the bundle now that the window is ready
+            if let Some(bundle_content) = bundle {
+                log::info!("Executing JS bundle ({} bytes)", bundle_content.len());
+                let bundle_c = std::ffi::CString::new(bundle_content).unwrap();
+                unsafe {
+                    rnl_execute_bundle(bundle_c.as_ptr());
+                }
+            }
 
             window.present();
         });
@@ -129,6 +153,24 @@ pub extern "C" fn rnl_platform_get_root_container() -> *mut c_void {
             std::ptr::null_mut()
         }
     })
+}
+
+/// Set the JS bundle to be executed when the window is ready
+#[no_mangle]
+pub extern "C" fn rnl_platform_set_bundle(bundle: *const c_char) {
+    if bundle.is_null() {
+        return;
+    }
+    
+    let bundle_str = unsafe { CStr::from_ptr(bundle) }
+        .to_string_lossy()
+        .into_owned();
+    
+    log::debug!("Bundle set ({} bytes), will execute on activate", bundle_str.len());
+    
+    APP_STATE.with(|state| {
+        state.borrow_mut().pending_bundle = Some(bundle_str);
+    });
 }
 
 /// Run the main event loop
