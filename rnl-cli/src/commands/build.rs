@@ -110,33 +110,51 @@ fn bundle_js(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
         args.push("--sourcemap".to_string());
     }
 
-    // Try npx esbuild first, fall back to global esbuild
-    let result = Command::new("npx")
-        .args(&["esbuild"])
-        .args(&args)
-        .current_dir(project_dir)
-        .output();
+    // Try bunx first (for bun users), then npx, then global esbuild
+    let runners = [
+        ("bunx", vec!["esbuild"]),
+        ("npx", vec!["esbuild"]),
+        ("esbuild", vec![]),
+    ];
 
-    match result {
-        Ok(output) => {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("esbuild failed: {}", stderr);
-            }
-            if verbose {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if !stdout.is_empty() {
-                    println!("{}", stdout);
+    for (runner, prefix_args) in &runners {
+        let mut cmd_args: Vec<String> = prefix_args.iter().map(|s| s.to_string()).collect();
+        cmd_args.extend(args.clone());
+
+        let result = Command::new(runner)
+            .args(&cmd_args)
+            .current_dir(project_dir)
+            .output();
+
+        match result {
+            Ok(output) => {
+                if output.status.success() {
+                    if verbose {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        if !stdout.is_empty() {
+                            println!("{}", stdout);
+                        }
+                    }
+                    println!("  {} target/bundle.js", "created".green());
+                    return Ok(());
                 }
+                // If this runner exists but failed, report the error
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.contains("not found") && !stderr.contains("No such file") {
+                    bail!("esbuild failed: {}", stderr);
+                }
+                // Otherwise try next runner
             }
-            println!("  {} target/bundle.js", "created".green());
-            Ok(())
+            Err(_) => continue, // Try next runner
         }
-        Err(_) => bail!(
-            "esbuild not found. Install it with: npm install -g esbuild\n\
-             Or run: npm install (in project directory)"
-        ),
     }
+
+    bail!(
+        "esbuild not found. Install it with one of:\n\
+         - bun add -d esbuild  (if using bun)\n\
+         - npm install         (in project directory)\n\
+         - npm install -g esbuild"
+    )
 }
 
 fn build_core(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
