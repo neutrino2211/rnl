@@ -53,10 +53,15 @@ pub unsafe extern "C" fn rnl_main(
     // Call platform init to register elements
     extern "C" {
         fn rnl_platform_init();
+        fn rnl_platform_create_window(title: *const c_char, width: i32, height: i32) -> c_int;
     }
     rnl_platform_init();
     log::info!("Platform initialized, {} elements registered", 
                Registry::global().count());
+
+    // Create the main window
+    let title = std::ffi::CString::new("RNL App").unwrap();
+    rnl_platform_create_window(title.as_ptr(), 800, 600);
 
     // Load JS bundle
     let bundle_content = if bundle_path.is_null() {
