@@ -4,3 +4,4 @@ target/
 *.o
 *.d
 .lock
+Cargo.lock
