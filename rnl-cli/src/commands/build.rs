@@ -160,13 +160,22 @@ fn build_core(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Check if there's a Cargo.toml
+    if !core_dir.join("Cargo.toml").exists() {
+        println!("  {} Core Cargo.toml not found, skipping", "note:".yellow());
+        return Ok(());
+    }
+
     let mut cmd = Command::new("cargo");
     cmd.arg("build");
+    // Explicitly build only rnl-core to avoid triggering platform builds
+    cmd.arg("-p").arg("rnl-core");
 
     if release {
         cmd.arg("--release");
     }
 
+    // Build from the core directory but it will use the workspace if it exists
     cmd.current_dir(&core_dir);
 
     let output = cmd.output().context("Failed to run cargo build")?;
@@ -201,17 +210,48 @@ fn build_platform(
 }
 
 fn build_linux(project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
+    // Check for platform in project first, then in RNL framework directory
     let platform_dir = project_dir.join("platforms/linux");
     
-    if !platform_dir.exists() {
-        println!("  {} Linux platform not present, skipping", "note:".yellow());
-        return Ok(());
-    }
+    // If project platform dir doesn't have Cargo.toml, look for RNL framework
+    let platform_dir = if platform_dir.join("Cargo.toml").exists() {
+        platform_dir
+    } else {
+        // Try to find the RNL framework's platform directory
+        // Look relative to the rnl binary or in common locations
+        let rnl_framework_paths = [
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|pp| pp.parent().map(|ppp| ppp.to_path_buf())))
+                .flatten()
+                .unwrap_or_default()
+                .join("platforms/linux"),
+            project_dir.join("../platforms/linux"), // If running from within RNL workspace
+            std::path::PathBuf::from("/home/openclaw/.openclaw/workspace/projects/rnl/platforms/linux"),
+        ];
+
+        let framework_platform = rnl_framework_paths
+            .iter()
+            .find(|p| p.join("Cargo.toml").exists());
+
+        match framework_platform {
+            Some(p) => p.clone(),
+            None => {
+                println!("  {} Linux platform not found in project or framework", "note:".yellow());
+                println!("  {} Platform directories checked:", "note:".yellow());
+                println!("    - {}", platform_dir.display());
+                for p in &rnl_framework_paths {
+                    println!("    - {}", p.display());
+                }
+                return Ok(());
+            }
+        }
+    };
 
     // Check if this is a Rust platform (has Cargo.toml) or C++ platform
     let cargo_toml = platform_dir.join("Cargo.toml");
     if cargo_toml.exists() {
-        return build_linux_rust(project_dir, release, verbose, config);
+        return build_linux_rust_from_dir(&platform_dir, project_dir, release, verbose, config);
     }
 
     // Fall back to C++ build
@@ -220,95 +260,159 @@ fn build_linux(project_dir: &Path, release: bool, verbose: bool, config: &Config
 
 fn build_linux_rust(project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
     let platform_dir = project_dir.join("platforms/linux");
+    build_linux_rust_from_dir(&platform_dir, project_dir, release, verbose, config)
+}
+
+fn build_linux_rust_from_dir(platform_dir: &Path, project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
     let mode = if release { "release" } else { "debug" };
-    let output_dir = project_dir.join(format!("target/linux"));
+    let output_dir = project_dir.join("target/linux");
     std::fs::create_dir_all(&output_dir)?;
 
-    // First, build the core library if it exists
-    let core_dir = project_dir.join("core");
-    if core_dir.exists() {
-        println!("  Building core library...");
+    // Check for RNL workspace (contains both core and platform)
+    // If platform_dir is part of the RNL workspace, we build from there
+    let rnl_workspace_root = platform_dir.parent().and_then(|p| p.parent());
+    let is_rnl_workspace = rnl_workspace_root
+        .map(|root| root.join("core/Cargo.toml").exists() && root.join("Cargo.toml").exists())
+        .unwrap_or(false);
+
+    if is_rnl_workspace {
+        let workspace_root = rnl_workspace_root.unwrap();
+        println!("  Building from RNL workspace at {}", workspace_root.display());
+        
+        // Build the entire workspace which includes core + platform
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build");
+        cmd.arg("-p").arg("rnl-linux");
+        if release {
+            cmd.arg("--release");
+        }
+        cmd.current_dir(workspace_root);
+
+        if verbose {
+            cmd.arg("-v");
+        }
+
+        println!("  Compiling Rust platform code...");
+        let output = cmd.output().context("Failed to run cargo build for platform")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            
+            // Check for GTK4 not found error
+            if stderr.contains("glib-sys") || stderr.contains("pkg-config") || stderr.contains("gtk4") {
+                bail!(
+                    "GTK4 development libraries not found.\n\n\
+                     Install the required dependencies:\n\
+                     - Ubuntu/Debian: sudo apt install libgtk-4-dev pkg-config\n\
+                     - Fedora: sudo dnf install gtk4-devel\n\
+                     - Arch: sudo pacman -S gtk4\n\n\
+                     Note: The code has been written but requires GTK4 to compile.\n\
+                     You can test on a machine with GTK4 installed.\n\n\
+                     The JS bundle was created successfully at: target/bundle.js"
+                );
+            }
+            
+            bail!("Cargo build failed:\n{}", stderr);
+        }
+
+        if verbose {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            println!("{}", stdout);
+        }
+
+        // Copy the binary to the project's output directory
+        let binary_name = &config.project.name;
+        let platform_bin = workspace_root.join(format!("target/{}/rnl-linux", mode));
+        let output_bin = output_dir.join(binary_name);
+
+        if platform_bin.exists() {
+            std::fs::copy(&platform_bin, &output_bin)?;
+            println!("  {} {} (Rust/GTK4)", "built".green(), binary_name);
+        } else {
+            // Try with underscore
+            let alt_bin = workspace_root.join(format!("target/{}/rnl_linux", mode));
+            if alt_bin.exists() {
+                std::fs::copy(&alt_bin, &output_bin)?;
+                println!("  {} {} (Rust/GTK4)", "built".green(), binary_name);
+            } else {
+                println!("  {} Binary built at {}", "note:".yellow(), workspace_root.join(format!("target/{}/", mode)).display());
+            }
+        }
+    } else {
+        // Standalone project build (project has its own platform dir)
+        // First, build the core library if it exists
+        let core_dir = project_dir.join("core");
+        if core_dir.exists() && core_dir.join("Cargo.toml").exists() {
+            println!("  Building core library...");
+            let mut cmd = Command::new("cargo");
+            cmd.arg("build");
+            if release {
+                cmd.arg("--release");
+            }
+            cmd.current_dir(&core_dir);
+            
+            let output = cmd.output().context("Failed to build core")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Core build failed:\n{}", stderr);
+            }
+        }
+
+        // Build the Linux platform
+        let core_lib_dir = project_dir.join(format!("core/target/{}", mode));
+        
         let mut cmd = Command::new("cargo");
         cmd.arg("build");
         if release {
             cmd.arg("--release");
         }
-        cmd.current_dir(&core_dir);
-        
-        let output = cmd.output().context("Failed to build core")?;
+        cmd.current_dir(platform_dir);
+
+        // Set environment variables for linking
+        if core_lib_dir.exists() {
+            let rustflags = format!("-L {} -l static=rnl", core_lib_dir.display());
+            cmd.env("RUSTFLAGS", rustflags);
+        }
+
+        if verbose {
+            cmd.arg("-v");
+        }
+
+        println!("  Compiling Rust platform code...");
+        let output = cmd.output().context("Failed to run cargo build for platform")?;
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Core build failed:\n{}", stderr);
+            
+            if stderr.contains("glib-sys") || stderr.contains("pkg-config") || stderr.contains("gtk4") {
+                bail!(
+                    "GTK4 development libraries not found.\n\n\
+                     Install the required dependencies:\n\
+                     - Ubuntu/Debian: sudo apt install libgtk-4-dev pkg-config\n\
+                     - Fedora: sudo dnf install gtk4-devel\n\
+                     - Arch: sudo pacman -S gtk4\n\n\
+                     Note: The code has been written but requires GTK4 to compile.\n\
+                     You can test on a machine with GTK4 installed.\n\n\
+                     The JS bundle was created successfully at: target/bundle.js"
+                );
+            }
+            
+            bail!("Cargo build failed:\n{}", stderr);
         }
-    }
 
-    // Build the Linux platform
-    // We need to link against librnl from the core
-    let core_lib_dir = project_dir.join(format!("core/target/{}", mode));
-    
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build");
-    if release {
-        cmd.arg("--release");
-    }
-    cmd.current_dir(&platform_dir);
-
-    // Set environment variables for linking
-    if core_lib_dir.exists() {
-        // Add rustflags for linking
-        let rustflags = format!(
-            "-L {} -l static=rnl",
-            core_lib_dir.display()
-        );
-        cmd.env("RUSTFLAGS", rustflags);
-    }
-
-    if verbose {
-        cmd.arg("-v");
-    }
-
-    println!("  Compiling Rust platform code...");
-    let output = cmd.output().context("Failed to run cargo build for platform")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        
-        // Check for GTK4 not found error
-        if stderr.contains("gtk4") || stderr.contains("pkg-config") {
-            bail!(
-                "GTK4 development libraries not found.\n\
-                 Install with: sudo apt install libgtk-4-dev\n\n\
-                 Note: The code has been written but requires GTK4 to compile.\n\
-                 You can test on a machine with GTK4 installed.\n\n\
-                 Full error:\n{}",
-                stderr
-            );
+        if verbose {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            println!("{}", stdout);
         }
-        
-        bail!("Cargo build failed:\n{}", stderr);
-    }
 
-    if verbose {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        println!("{}", stdout);
-    }
+        // Copy the binary
+        let binary_name = &config.project.name;
+        let platform_bin = platform_dir.join(format!("target/{}/rnl-linux", mode));
+        let output_bin = output_dir.join(binary_name);
 
-    // Copy the binary to the output directory
-    let binary_name = &config.project.name;
-    let platform_bin = platform_dir.join(format!("target/{}/rnl-linux", mode));
-    let output_bin = output_dir.join(binary_name);
-
-    if platform_bin.exists() {
-        std::fs::copy(&platform_bin, &output_bin)?;
-        println!("  {} {} (Rust/GTK4)", "built".green(), binary_name);
-    } else {
-        // Try alternative binary name
-        let alt_bin = platform_dir.join(format!("target/{}/rnl_linux", mode));
-        if alt_bin.exists() {
-            std::fs::copy(&alt_bin, &output_bin)?;
+        if platform_bin.exists() {
+            std::fs::copy(&platform_bin, &output_bin)?;
             println!("  {} {} (Rust/GTK4)", "built".green(), binary_name);
-        } else {
-            println!("  {} Binary built but not copied (check platforms/linux/target/{})", "note:".yellow(), mode);
         }
     }
 
