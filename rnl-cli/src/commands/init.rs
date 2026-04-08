@@ -107,6 +107,16 @@ fn create_project_structure(project_dir: &Path, name: &str, platforms: &[&str]) 
     fs::write(project_dir.join("src/App.tsx"), app_tsx)?;
     println!("  {} src/App.tsx", "created".green());
 
+    // Create rnl shim package (for esbuild to resolve)
+    let rnl_shim_dir = project_dir.join("node_modules/rnl");
+    fs::create_dir_all(&rnl_shim_dir)?;
+    fs::write(rnl_shim_dir.join("package.json"), generate_rnl_package_json())?;
+    fs::write(rnl_shim_dir.join("index.js"), generate_rnl_shim())?;
+    fs::write(rnl_shim_dir.join("index.d.ts"), generate_rnl_types())?;
+    fs::write(rnl_shim_dir.join("jsx-runtime.js"), generate_rnl_jsx_runtime())?;
+    fs::write(rnl_shim_dir.join("jsx-runtime.d.ts"), generate_rnl_jsx_runtime_types())?;
+    println!("  {} node_modules/rnl (runtime shim)", "created".green());
+
     // Create .gitignore
     let gitignore = generate_gitignore();
     fs::write(project_dir.join(".gitignore"), gitignore)?;
@@ -153,6 +163,7 @@ fn generate_tsconfig() -> String {
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
+    "jsxImportSource": "rnl",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -163,7 +174,10 @@ fn generate_tsconfig() -> String {
     "sourceMap": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "types": ["rnl"]
+    "baseUrl": ".",
+    "paths": {
+      "rnl": ["./node_modules/rnl"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "target", "dist"]
@@ -278,4 +292,268 @@ rnl build --release
 "#,
         name, name
     )
+}
+
+fn generate_rnl_package_json() -> String {
+    r#"{
+  "name": "rnl",
+  "version": "0.1.0",
+  "main": "index.js",
+  "types": "index.d.ts"
+}
+"#.to_string()
+}
+
+fn generate_rnl_shim() -> String {
+    r#"// RNL Runtime Shim
+// This bridges React to native RNL components via RNLNativeModule
+
+const RNL = globalThis.RNLNativeModule || {};
+
+// Simple hooks implementation for QuickJS
+let currentComponent = null;
+let hookIndex = 0;
+const componentStates = new WeakMap();
+
+function getComponentState() {
+    if (!componentStates.has(currentComponent)) {
+        componentStates.set(currentComponent, { hooks: [] });
+    }
+    return componentStates.get(currentComponent);
+}
+
+export function useState(initialValue) {
+    const state = getComponentState();
+    const idx = hookIndex++;
+    
+    if (state.hooks[idx] === undefined) {
+        state.hooks[idx] = typeof initialValue === 'function' ? initialValue() : initialValue;
+    }
+    
+    const setState = (newValue) => {
+        const current = state.hooks[idx];
+        state.hooks[idx] = typeof newValue === 'function' ? newValue(current) : newValue;
+        // Trigger re-render
+        if (currentComponent && currentComponent.__rerender) {
+            currentComponent.__rerender();
+        }
+    };
+    
+    return [state.hooks[idx], setState];
+}
+
+export function useEffect(effect, deps) {
+    const state = getComponentState();
+    const idx = hookIndex++;
+    
+    const prevDeps = state.hooks[idx]?.deps;
+    const hasChanged = !prevDeps || !deps || deps.some((d, i) => d !== prevDeps[i]);
+    
+    if (hasChanged) {
+        if (state.hooks[idx]?.cleanup) {
+            state.hooks[idx].cleanup();
+        }
+        const cleanup = effect();
+        state.hooks[idx] = { deps, cleanup };
+    }
+}
+
+export function useCallback(callback, deps) {
+    const state = getComponentState();
+    const idx = hookIndex++;
+    
+    const prevDeps = state.hooks[idx]?.deps;
+    const hasChanged = !prevDeps || !deps || deps.some((d, i) => d !== prevDeps[i]);
+    
+    if (hasChanged) {
+        state.hooks[idx] = { callback, deps };
+    }
+    
+    return state.hooks[idx].callback;
+}
+
+export function useMemo(factory, deps) {
+    const state = getComponentState();
+    const idx = hookIndex++;
+    
+    const prevDeps = state.hooks[idx]?.deps;
+    const hasChanged = !prevDeps || !deps || deps.some((d, i) => d !== prevDeps[i]);
+    
+    if (hasChanged) {
+        state.hooks[idx] = { value: factory(), deps };
+    }
+    
+    return state.hooks[idx].value;
+}
+
+export function useRef(initialValue) {
+    const state = getComponentState();
+    const idx = hookIndex++;
+    
+    if (state.hooks[idx] === undefined) {
+        state.hooks[idx] = { current: initialValue };
+    }
+    
+    return state.hooks[idx];
+}
+
+// Simple JSX runtime
+export function createElement(type, props, ...children) {
+    return { type, props: { ...props, children: children.flat() } };
+}
+
+// Render function - walks VDOM and creates native widgets
+export function render(element, container) {
+    if (element === null || element === undefined) return null;
+    if (typeof element === 'string' || typeof element === 'number') {
+        return RNL.createText?.(String(element));
+    }
+    
+    const { type, props } = element;
+    
+    // Function component
+    if (typeof type === 'function') {
+        const prevComponent = currentComponent;
+        const prevHookIndex = hookIndex;
+        
+        const component = { fn: type, props };
+        currentComponent = component;
+        hookIndex = 0;
+        
+        const result = type(props);
+        
+        currentComponent = prevComponent;
+        hookIndex = prevHookIndex;
+        
+        return render(result, container);
+    }
+    
+    // Native element
+    const handle = RNL.createNode?.(type);
+    if (!handle) {
+        console.warn('Unknown element type:', type);
+        return null;
+    }
+    
+    // Set attributes
+    if (props) {
+        for (const [key, value] of Object.entries(props)) {
+            if (key === 'children') continue;
+            if (key.startsWith('on')) {
+                const eventName = key.slice(2).toLowerCase();
+                RNL.setCallback?.(handle, eventName, value);
+            } else if (key === 'style' && typeof value === 'object') {
+                for (const [styleProp, styleVal] of Object.entries(value)) {
+                    RNL.setAttribute?.(handle, `style.${styleProp}`, String(styleVal));
+                }
+            } else {
+                RNL.setAttribute?.(handle, key, String(value));
+            }
+        }
+        
+        // Render children
+        const children = props.children || [];
+        for (const child of Array.isArray(children) ? children : [children]) {
+            const childHandle = render(child, handle);
+            if (childHandle) {
+                RNL.appendChild?.(handle, childHandle);
+            }
+        }
+    }
+    
+    // Append to container or root
+    if (container) {
+        RNL.appendChild?.(container, handle);
+    } else {
+        const root = RNL.getRootHandle?.();
+        if (root) {
+            RNL.appendChild?.(root, handle);
+        }
+    }
+    
+    return handle;
+}
+
+// JSX runtime exports (for react-jsx transform)
+export const jsx = createElement;
+export const jsxs = createElement;
+export const Fragment = ({ children }) => children;
+
+export default { useState, useEffect, useCallback, useMemo, useRef, createElement, render, jsx, jsxs, Fragment };
+"#.to_string()
+}
+
+fn generate_rnl_types() -> String {
+    r#"// RNL Type Definitions
+
+import { ReactNode, ReactElement } from 'react';
+
+// Hooks
+export function useState<T>(initialValue: T | (() => T)): [T, (value: T | ((prev: T) => T)) => void];
+export function useEffect(effect: () => void | (() => void), deps?: any[]): void;
+export function useCallback<T extends (...args: any[]) => any>(callback: T, deps: any[]): T;
+export function useMemo<T>(factory: () => T, deps: any[]): T;
+export function useRef<T>(initialValue: T): { current: T };
+
+// JSX
+export function createElement(type: any, props: any, ...children: any[]): any;
+export function render(element: ReactElement, container?: any): any;
+
+export const jsx: typeof createElement;
+export const jsxs: typeof createElement;
+export const Fragment: React.FC<{ children?: ReactNode }>;
+
+// Native element props
+interface BoxProps {
+    orientation?: 'horizontal' | 'vertical';
+    spacing?: number;
+    style?: React.CSSProperties;
+    children?: ReactNode;
+}
+
+interface TextProps {
+    style?: React.CSSProperties;
+    children?: ReactNode;
+}
+
+interface ButtonProps {
+    label?: string;
+    enabled?: boolean;
+    onClick?: () => void;
+    style?: React.CSSProperties;
+}
+
+interface InputProps {
+    value?: string;
+    placeholder?: string;
+    onChange?: (value: string) => void;
+    style?: React.CSSProperties;
+}
+
+// Declare JSX intrinsic elements
+declare global {
+    namespace JSX {
+        interface IntrinsicElements {
+            box: BoxProps;
+            text: TextProps;
+            button: ButtonProps;
+            input: InputProps;
+        }
+    }
+}
+
+export {};
+"#.to_string()
+}
+
+fn generate_rnl_jsx_runtime() -> String {
+    r#"// RNL JSX Runtime (for react-jsx transform)
+export { jsx, jsxs, Fragment } from './index.js';
+"#.to_string()
+}
+
+fn generate_rnl_jsx_runtime_types() -> String {
+    r#"// RNL JSX Runtime Types
+export { jsx, jsxs, Fragment } from './index';
+"#.to_string()
 }
