@@ -57,18 +57,11 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     println!("{}", "→ Building Rust core...".cyan());
     build_core(&project_dir, opts.release, opts.verbose)?;
 
-    // Step 3: Build platform code
+    // Step 3: Build and link platform code
     for platform in &target_platforms {
         println!();
         println!("{} Building {} platform...", "→".cyan(), platform.yellow());
-        build_platform(&project_dir, platform, opts.release, opts.verbose)?;
-    }
-
-    // Step 4: Link
-    println!();
-    println!("{}", "→ Linking final binary...".cyan());
-    for platform in &target_platforms {
-        link_binary(&project_dir, platform, opts.release, opts.verbose)?;
+        build_platform(&project_dir, platform, opts.release, opts.verbose, &config)?;
     }
 
     println!();
@@ -77,12 +70,11 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     // Print output location
     let mode = if opts.release { "release" } else { "debug" };
     for platform in &target_platforms {
-        let binary_name = format!("{}", config.project.name);
+        let binary_name = &config.project.name;
         println!(
-            "  {} target/{}/{}/{}",
+            "  {} target/{}/{}",
             "→".green(),
             platform,
-            mode,
             binary_name
         );
     }
@@ -198,16 +190,17 @@ fn build_platform(
     platform: &str,
     release: bool,
     verbose: bool,
+    config: &Config,
 ) -> Result<()> {
     match platform {
-        "linux" => build_linux(project_dir, release, verbose),
-        "macos" => build_macos(project_dir, release, verbose),
-        "windows" => build_windows(project_dir, release, verbose),
+        "linux" => build_linux(project_dir, release, verbose, config),
+        "macos" => build_macos(project_dir, release, verbose, config),
+        "windows" => build_windows(project_dir, release, verbose, config),
         _ => bail!("Unknown platform: {}", platform),
     }
 }
 
-fn build_linux(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
+fn build_linux(project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
     let platform_dir = project_dir.join("platforms/linux");
     
     if !platform_dir.exists() {
@@ -215,9 +208,119 @@ fn build_linux(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Check if this is a Rust platform (has Cargo.toml) or C++ platform
+    let cargo_toml = platform_dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+        return build_linux_rust(project_dir, release, verbose, config);
+    }
+
+    // Fall back to C++ build
+    build_linux_cpp(project_dir, release, verbose, config)
+}
+
+fn build_linux_rust(project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
+    let platform_dir = project_dir.join("platforms/linux");
+    let mode = if release { "release" } else { "debug" };
+    let output_dir = project_dir.join(format!("target/linux"));
+    std::fs::create_dir_all(&output_dir)?;
+
+    // First, build the core library if it exists
+    let core_dir = project_dir.join("core");
+    if core_dir.exists() {
+        println!("  Building core library...");
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build");
+        if release {
+            cmd.arg("--release");
+        }
+        cmd.current_dir(&core_dir);
+        
+        let output = cmd.output().context("Failed to build core")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Core build failed:\n{}", stderr);
+        }
+    }
+
+    // Build the Linux platform
+    // We need to link against librnl from the core
+    let core_lib_dir = project_dir.join(format!("core/target/{}", mode));
+    
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build");
+    if release {
+        cmd.arg("--release");
+    }
+    cmd.current_dir(&platform_dir);
+
+    // Set environment variables for linking
+    if core_lib_dir.exists() {
+        // Add rustflags for linking
+        let rustflags = format!(
+            "-L {} -l static=rnl",
+            core_lib_dir.display()
+        );
+        cmd.env("RUSTFLAGS", rustflags);
+    }
+
+    if verbose {
+        cmd.arg("-v");
+    }
+
+    println!("  Compiling Rust platform code...");
+    let output = cmd.output().context("Failed to run cargo build for platform")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        // Check for GTK4 not found error
+        if stderr.contains("gtk4") || stderr.contains("pkg-config") {
+            bail!(
+                "GTK4 development libraries not found.\n\
+                 Install with: sudo apt install libgtk-4-dev\n\n\
+                 Note: The code has been written but requires GTK4 to compile.\n\
+                 You can test on a machine with GTK4 installed.\n\n\
+                 Full error:\n{}",
+                stderr
+            );
+        }
+        
+        bail!("Cargo build failed:\n{}", stderr);
+    }
+
+    if verbose {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        println!("{}", stdout);
+    }
+
+    // Copy the binary to the output directory
+    let binary_name = &config.project.name;
+    let platform_bin = platform_dir.join(format!("target/{}/rnl-linux", mode));
+    let output_bin = output_dir.join(binary_name);
+
+    if platform_bin.exists() {
+        std::fs::copy(&platform_bin, &output_bin)?;
+        println!("  {} {} (Rust/GTK4)", "built".green(), binary_name);
+    } else {
+        // Try alternative binary name
+        let alt_bin = platform_dir.join(format!("target/{}/rnl_linux", mode));
+        if alt_bin.exists() {
+            std::fs::copy(&alt_bin, &output_bin)?;
+            println!("  {} {} (Rust/GTK4)", "built".green(), binary_name);
+        } else {
+            println!("  {} Binary built but not copied (check platforms/linux/target/{})", "note:".yellow(), mode);
+        }
+    }
+
+    Ok(())
+}
+
+fn build_linux_cpp(project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
+    let platform_dir = project_dir.join("platforms/linux");
+
     // Use pkg-config to get GTK4 flags
     let pkg_config = Command::new("pkg-config")
-        .args(&["--cflags", "--libs", "gtk4", "libadwaita-1"])
+        .args(["--cflags", "--libs", "gtk4"])
         .output();
 
     let (cflags, libs) = match pkg_config {
@@ -240,7 +343,7 @@ fn build_linux(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
         _ => {
             bail!(
                 "GTK4 development libraries not found.\n\
-                 Install with: sudo apt install libgtk-4-dev libadwaita-1-dev"
+                 Install with: sudo apt install libgtk-4-dev"
             );
         }
     };
@@ -260,10 +363,8 @@ fn build_linux(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
     }
 
     // Compile each file to .o
-    let obj_dir = project_dir.join(format!(
-        "target/linux/{}",
-        if release { "release" } else { "debug" }
-    ));
+    let mode = if release { "release" } else { "debug" };
+    let obj_dir = project_dir.join(format!("target/linux/{}", mode));
     std::fs::create_dir_all(&obj_dir)?;
 
     let optimization = if release { "-O2" } else { "-O0 -g" };
@@ -278,7 +379,7 @@ fn build_linux(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
         let obj_path = obj_dir.join(&obj_name);
 
         let mut cmd = Command::new("g++");
-        cmd.args(&["-c", "-std=c++17"])
+        cmd.args(["-c", "-std=c++17"])
             .arg(optimization)
             .args(cflags.split_whitespace())
             .arg("-I")
@@ -300,10 +401,62 @@ fn build_linux(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
     }
 
     println!("  {} {} object files", "compiled".green(), cpp_files.len());
+
+    // Link
+    link_linux_binary(project_dir, &obj_dir, release, config)?;
+
     Ok(())
 }
 
-fn build_macos(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
+fn link_linux_binary(project_dir: &Path, obj_dir: &Path, release: bool, config: &Config) -> Result<()> {
+    let mode = if release { "release" } else { "debug" };
+    let binary_name = &config.project.name;
+    let output_dir = project_dir.join("target/linux");
+    std::fs::create_dir_all(&output_dir)?;
+
+    // Get GTK4 linker flags
+    let pkg_config = Command::new("pkg-config")
+        .args(["--libs", "gtk4"])
+        .output()?;
+    let libs = String::from_utf8_lossy(&pkg_config.stdout);
+
+    // Collect all .o files
+    let obj_files: Vec<_> = std::fs::read_dir(obj_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "o").unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+
+    if obj_files.is_empty() {
+        println!("  {} No object files to link", "note:".yellow());
+        return Ok(());
+    }
+
+    let mut cmd = Command::new("g++");
+    cmd.args(&obj_files);
+
+    // Link against librnl if it exists
+    let librnl_path = project_dir.join(format!("core/target/{}/librnl.a", mode));
+    if librnl_path.exists() {
+        cmd.arg(&librnl_path);
+    }
+
+    cmd.args(libs.split_whitespace())
+        .arg("-o")
+        .arg(output_dir.join(binary_name));
+
+    let output = cmd.output().context("Failed to link")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Linking failed:\n{}", stderr);
+    }
+
+    println!("  {} {}", "linked".green(), binary_name);
+    Ok(())
+}
+
+fn build_macos(project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
     let platform_dir = project_dir.join("platforms/macos");
     
     if !platform_dir.exists() {
@@ -325,10 +478,8 @@ fn build_macos(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
         return Ok(());
     }
 
-    let obj_dir = project_dir.join(format!(
-        "target/macos/{}",
-        if release { "release" } else { "debug" }
-    ));
+    let mode = if release { "release" } else { "debug" };
+    let obj_dir = project_dir.join(format!("target/macos/{}", mode));
     std::fs::create_dir_all(&obj_dir)?;
 
     let optimization = if release { "-O" } else { "-Onone -g" };
@@ -350,10 +501,37 @@ fn build_macos(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
     }
 
     println!("  {} {} Swift files", "compiled".green(), swift_files.len());
+
+    // Link
+    let binary_name = &config.project.name;
+    let obj_path = obj_dir.join("platform.o");
+    let output_dir = project_dir.join("target/macos");
+    std::fs::create_dir_all(&output_dir)?;
+
+    let mut cmd = Command::new("swiftc");
+    cmd.arg(&obj_path)
+        .arg("-framework")
+        .arg("AppKit");
+
+    let librnl_path = project_dir.join(format!("core/target/{}/librnl.a", mode));
+    if librnl_path.exists() {
+        cmd.arg(&librnl_path);
+    }
+
+    cmd.arg("-o").arg(output_dir.join(binary_name));
+
+    let output = cmd.output().context("Failed to link")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Linking failed:\n{}", stderr);
+    }
+
+    println!("  {} {}", "linked".green(), binary_name);
     Ok(())
 }
 
-fn build_windows(project_dir: &Path, release: bool, verbose: bool) -> Result<()> {
+fn build_windows(project_dir: &Path, release: bool, verbose: bool, config: &Config) -> Result<()> {
     let platform_dir = project_dir.join("platforms/windows");
     
     if !platform_dir.exists() {
@@ -371,11 +549,8 @@ fn build_windows(project_dir: &Path, release: bool, verbose: bool) -> Result<()>
         );
     }
 
-    let obj_dir = project_dir.join(format!(
-        "target/windows/{}",
-        if release { "release" } else { "debug" }
-    ));
-    std::fs::create_dir_all(&obj_dir)?;
+    let output_dir = project_dir.join("target/windows");
+    std::fs::create_dir_all(&output_dir)?;
 
     // Build with dotnet
     let mut cmd = Command::new("dotnet");
@@ -386,7 +561,7 @@ fn build_windows(project_dir: &Path, release: bool, verbose: bool) -> Result<()>
         cmd.arg("-c").arg("Release");
     }
 
-    cmd.arg("-o").arg(&obj_dir);
+    cmd.arg("-o").arg(&output_dir);
 
     let output = cmd.output().context("Failed to run dotnet build")?;
 
@@ -396,98 +571,5 @@ fn build_windows(project_dir: &Path, release: bool, verbose: bool) -> Result<()>
     }
 
     println!("  {} Windows platform", "built".green());
-    Ok(())
-}
-
-fn link_binary(
-    project_dir: &Path,
-    platform: &str,
-    release: bool,
-    verbose: bool,
-) -> Result<()> {
-    let config = Config::load(project_dir)?;
-    let mode = if release { "release" } else { "debug" };
-    let obj_dir = project_dir.join(format!("target/{}/{}", platform, mode));
-    let binary_name = &config.project.name;
-
-    match platform {
-        "linux" => {
-            // Get GTK4 linker flags
-            let pkg_config = Command::new("pkg-config")
-                .args(&["--libs", "gtk4", "libadwaita-1"])
-                .output()?;
-            let libs = String::from_utf8_lossy(&pkg_config.stdout);
-
-            // Collect all .o files
-            let obj_files: Vec<_> = std::fs::read_dir(&obj_dir)?
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map(|ext| ext == "o").unwrap_or(false))
-                .map(|e| e.path())
-                .collect();
-
-            if obj_files.is_empty() {
-                println!("  {} No object files to link", "note:".yellow());
-                return Ok(());
-            }
-
-            let mut cmd = Command::new("g++");
-            cmd.args(&obj_files);
-
-            // Link against librnl if it exists
-            let librnl_path = project_dir.join(format!("core/target/{}/librnl.a", mode));
-            if librnl_path.exists() {
-                cmd.arg(&librnl_path);
-            }
-
-            cmd.args(libs.split_whitespace())
-                .arg("-o")
-                .arg(obj_dir.join(binary_name));
-
-            let output = cmd.output().context("Failed to link")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("Linking failed:\n{}", stderr);
-            }
-
-            println!("  {} {}", "linked".green(), binary_name);
-        }
-        "macos" => {
-            // Link with Swift and AppKit
-            let obj_path = obj_dir.join("platform.o");
-            
-            if !obj_path.exists() {
-                println!("  {} No object file to link", "note:".yellow());
-                return Ok(());
-            }
-
-            let mut cmd = Command::new("swiftc");
-            cmd.arg(&obj_path)
-                .arg("-framework")
-                .arg("AppKit");
-
-            let librnl_path = project_dir.join(format!("core/target/{}/librnl.a", mode));
-            if librnl_path.exists() {
-                cmd.arg(&librnl_path);
-            }
-
-            cmd.arg("-o").arg(obj_dir.join(binary_name));
-
-            let output = cmd.output().context("Failed to link")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("Linking failed:\n{}", stderr);
-            }
-
-            println!("  {} {}", "linked".green(), binary_name);
-        }
-        "windows" => {
-            // Windows linking is handled by dotnet build
-            println!("  {} Windows executable", "created".green());
-        }
-        _ => bail!("Unknown platform: {}", platform),
-    }
-
     Ok(())
 }

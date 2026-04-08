@@ -1,0 +1,28 @@
+[package]
+name = "rnl-linux"
+version = "0.1.0"
+edition = "2021"
+description = "Linux/GTK4 platform implementation for RNL"
+authors = ["Mainasara Tsowa <mainasara@neutrino.dev>"]
+license = "MIT"
+
+[[bin]]
+name = "rnl-linux"
+path = "src/main.rs"
+
+[dependencies]
+# GTK4 bindings
+gtk4 = "0.9"
+
+# Async runtime integration
+once_cell = "1.21"
+parking_lot = "0.12"
+log = "0.4"
+env_logger = "0.11"
+
+# For linking against librnl.a
+[build-dependencies]
+# None needed - we link via build.rs
+
+[features]
+default = []

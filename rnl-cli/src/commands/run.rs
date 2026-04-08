@@ -28,18 +28,31 @@ pub fn run(opts: RunOpts) -> Result<()> {
     println!();
 
     // Determine binary path
-    let mode = if opts.release { "release" } else { "debug" };
+    // Try the new simplified path first, then fall back to mode-based path
     let binary_path = project_dir.join(format!(
-        "target/{}/{}/{}",
-        opts.platform, mode, config.project.name
+        "target/{}/{}",
+        opts.platform, config.project.name
     ));
 
-    if !binary_path.exists() {
-        bail!(
-            "Binary not found at {}. Build may have failed.",
-            binary_path.display()
-        );
-    }
+    let binary_path = if binary_path.exists() {
+        binary_path
+    } else {
+        // Try mode-specific path
+        let mode = if opts.release { "release" } else { "debug" };
+        let mode_path = project_dir.join(format!(
+            "target/{}/{}/{}",
+            opts.platform, mode, config.project.name
+        ));
+        
+        if !mode_path.exists() {
+            bail!(
+                "Binary not found at {} or {}. Build may have failed.",
+                binary_path.display(),
+                mode_path.display()
+            );
+        }
+        mode_path
+    };
 
     // Run the binary
     let status = Command::new(&binary_path)
