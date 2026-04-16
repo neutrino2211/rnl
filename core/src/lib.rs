@@ -160,6 +160,24 @@ pub unsafe extern "C" fn rnl_error(message: *const c_char) {
     // For now, just log the error
 }
 
+/// Implementation of callback invocation (called by bridge.rs)
+///
+/// # Safety
+/// This is only called from rnl_invoke_callback in bridge.rs
+#[no_mangle]
+pub extern "C" fn rnl_invoke_callback_impl(callback_id: u64) -> c_int {
+    let runtime = init_runtime();
+    let mut rt = runtime.lock();
+    
+    match rt.invoke_callback(callback_id) {
+        Ok(_) => 0,
+        Err(e) => {
+            log::error!("Callback {} failed: {}", callback_id, e);
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

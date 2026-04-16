@@ -86,6 +86,14 @@ void rnl_log(const char *level, const char *message);
 void rnl_error(const char *message);
 
 /**
+ * Implementation of callback invocation (called by bridge.rs)
+ *
+ * # Safety
+ * This is only called from rnl_invoke_callback in bridge.rs
+ */
+int rnl_invoke_callback_impl(uint64_t callback_id);
+
+/**
  * C API: Register an element factory
  *
  * # Safety
@@ -98,8 +106,8 @@ void rnl_register_element(const struct rnl_RnlElementFactory *factory);
  * C API: Invoke a JS callback from native code
  *
  * # Safety
- * - callback must be a valid callback handle
- * - event_json must be a valid C string
+ * - callback must be a valid callback ID (cast to pointer)
+ * - event_json must be a valid C string (currently unused)
  */
 void rnl_invoke_callback(void *callback, const char *event_json);
 

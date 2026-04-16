@@ -85,6 +85,14 @@ impl JsRuntime {
         })
     }
 
+    /// Invoke a stored callback by ID
+    pub fn invoke_callback(&mut self, callback_id: u64) -> Result<(), RuntimeError> {
+        self.context.with(|ctx| {
+            crate::callbacks::invoke_callback(ctx, callback_id)
+                .map_err(|e| RuntimeError::JsError(e))
+        })
+    }
+
     /// Execute pending jobs (microtasks, timers)
     pub fn execute_pending_jobs(&mut self) {
         loop {
@@ -95,6 +103,20 @@ impl JsRuntime {
             }
         }
     }
+}
+
+/// Handler for setCallback - stores the JS function persistently
+fn set_callback_handler<'js>(ctx: Ctx<'js>, handle: i64, name: String, callback: Function<'js>) {
+    log::debug!("setCallback({}, {}, <function>)", handle, name);
+    
+    // Register the callback to get an ID
+    let callback_id = crate::callbacks::register_callback(handle, &name);
+    
+    // Store the actual JS function persistently
+    crate::callbacks::store_callback_function(ctx, callback_id, handle, &name, callback);
+    
+    // Tell the native element about the callback ID
+    crate::bridge::set_callback_with_id(handle, &name, callback_id);
 }
 
 /// Set up console object with log/warn/error/debug
@@ -239,19 +261,10 @@ fn setup_rnl_module(ctx: &Ctx) -> Result<(), RuntimeError> {
     )?;
 
     // setCallback(handle: number, name: string, callback: function)
-    // Store callback info and pass pointer to native code
+    // Store callback with persistent reference so native code can invoke it later
     module.set(
         "setCallback",
-        Func::from(|handle: i64, name: String, callback: Function| {
-            log::debug!("setCallback({}, {}, <function>)", handle, name);
-            
-            // Register the callback to get an ID
-            let callback_id = crate::callbacks::register_callback(handle, &name);
-            
-            // Store the Function in a global registry so we can call it later
-            // This is a simplification - full implementation would use proper ref management
-            crate::bridge::set_callback_with_id(handle, &name, callback_id);
-        }),
+        Func::from(set_callback_handler),
     )?;
 
     // appendChild(parent: number, child: number)

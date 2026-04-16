@@ -363,15 +363,16 @@ pub fn get_root_handle() -> i64 {
 /// C API: Invoke a JS callback from native code
 ///
 /// # Safety
-/// - callback must be a valid callback handle
-/// - event_json must be a valid C string
+/// - callback must be a valid callback ID (cast to pointer)
+/// - event_json must be a valid C string (currently unused)
 #[no_mangle]
 pub unsafe extern "C" fn rnl_invoke_callback(callback: *mut c_void, event_json: *const c_char) {
-    // This is a placeholder - full implementation requires storing Function objects
-    // and invoking them through the QuickJS context
     if callback.is_null() {
         return;
     }
+
+    // The callback pointer is actually the callback ID
+    let callback_id = callback as u64;
 
     let event = if event_json.is_null() {
         "{}".to_string()
@@ -381,10 +382,18 @@ pub unsafe extern "C" fn rnl_invoke_callback(callback: *mut c_void, event_json: 
             .into_owned()
     };
 
-    log::debug!("rnl_invoke_callback called with event: {}", event);
+    log::debug!("rnl_invoke_callback({}) with event: {}", callback_id, event);
     
-    // TODO: Actually invoke the callback through QuickJS
-    // This requires careful lifetime management of the Function object
+    // Get the runtime and invoke the callback
+    // We need to call through to lib.rs which owns the runtime
+    extern "C" {
+        fn rnl_invoke_callback_impl(callback_id: u64) -> std::ffi::c_int;
+    }
+    
+    let result = rnl_invoke_callback_impl(callback_id);
+    if result != 0 {
+        log::error!("Callback {} invocation failed", callback_id);
+    }
 }
 
 /// C API: Set the root container handle (called by platform)
