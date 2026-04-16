@@ -1,100 +1,48 @@
-# RNL Framework M2: Linux MVP
+# RNL Framework M2: Linux MVP ✅
 
-## Completion Status
+**Status: COMPLETE** — Counter app runs on GTK4 with working button callbacks!
 
-### Sprint 6: GTK4 Platform Bootstrap ✅
-- Created `platforms/linux/` with Rust GTK4 crate
-- Implemented `main.rs` that initializes GTK4 app + RNL core
-- Platform loads `target/bundle.js` via the core runtime
-- Registered platform with core via C ABI
+## What Works
 
-**Files created:**
-- `platforms/linux/Cargo.toml` - GTK4 dependencies
-- `platforms/linux/build.rs` - Build configuration
-- `platforms/linux/src/main.rs` - Entry point
-- `platforms/linux/src/platform.rs` - Platform implementation
+- ✅ JSX renders to native GTK4 widgets
+- ✅ Button clicks invoke JS callbacks
+- ✅ React useState updates UI
+- ✅ Box, Text, Button elements
+- ✅ Headless debugging mode
 
-**C ABI functions implemented:**
-- `rnl_platform_init()` - Register elements
-- `rnl_platform_create_window()` - Create GTK window
-- `rnl_platform_get_root_container()` - Get content area
-- `rnl_platform_run()` - Start GTK event loop
-- `rnl_platform_quit()` - Request exit
-- `rnl_platform_schedule_main()` - Schedule callback on main thread
+## Quick Start
 
-### Sprint 7: Core Elements (box, text, button) ✅
-- Implemented `GtkBox` wrapper registering as "box" element
-- Implemented `GtkLabel` wrapper registering as "text" element
-- Implemented `GtkButton` wrapper registering as "button" element
-- All implement `RnlElementFactory` C ABI
-
-**Files created:**
-- `platforms/linux/src/elements/mod.rs` - Element registration
-- `platforms/linux/src/elements/box_element.rs` - GtkBox wrapper
-- `platforms/linux/src/elements/text_element.rs` - GtkLabel wrapper
-- `platforms/linux/src/elements/button_element.rs` - GtkButton wrapper
-
-**Attributes supported:**
-| Element | Attributes |
-|---------|------------|
-| box | orientation, spacing, homogeneous, hexpand, vexpand, margin*, halign, valign |
-| text | children, text, selectable, wrap, ellipsize, justify, xalign, yalign, markup |
-| button | label, children, enabled, disabled, has-frame, icon-name, onClick |
-
-### Sprint 8: Build Pipeline Integration ✅
-- Updated `rnl build --platform linux` to detect Rust vs C++ platforms
-- `build_linux_rust_from_dir()` compiles GTK4 platform with cargo
-- Detects RNL workspace and builds from there
-- Links platform with librnl.a from core
-- Output binary to `target/linux/app`
-
-**Build flow:**
-1. Bundle JS → `target/bundle.js` (always succeeds)
-2. Build core (`cargo build -p rnl-core`)
-3. Detect platform location (project or RNL workspace)
-4. Build platform with GTK4
-
-### Sprint 9: Counter App Runs ⚠️ (Requires GTK4)
-- Test pipeline: `rnl init test-app && cd test-app && rnl build`
-- JS bundle creates successfully
-- Counter app template generated with +/- buttons
-- **Requires GTK4 dev libraries to compile native code**
-
-## Requirements
-
-### To build on Linux:
 ```bash
-# Ubuntu/Debian
+# Install GTK4 (Ubuntu/Debian)
 sudo apt install libgtk-4-dev pkg-config
 
-# Fedora
-sudo dnf install gtk4-devel
+# Clone and build
+git clone https://github.com/neutrino2211/rnl.git
+cd rnl
+cargo build --workspace
 
-# Arch
-sudo pacman -S gtk4
+# Create and run a counter app
+./target/debug/rnl init my-app --platforms linux
+cd my-app
+../target/debug/rnl build --platform linux
+./target/linux/my-app
 ```
-
-### What works without GTK4:
-- JS bundling (`target/bundle.js` created)
-- Project scaffolding (`rnl init`)
-- Core library tests (`cargo test -p rnl-core`)
-- CLI tests (`cargo test -p rnl-cli`)
 
 ## Architecture
 
 ```
 rnl/
-├── core/               # Rust runtime (QuickJS + element registry)
+├── core/                   # Rust runtime (QuickJS + bridge)
 │   ├── src/
-│   │   ├── lib.rs      # Entry point
-│   │   ├── runtime.rs  # JS runtime (QuickJS)
-│   │   ├── bridge.rs   # JS ↔ Native bridge
-│   │   ├── registry.rs # Element factory registry
-│   │   └── callbacks.rs # Callback management
-│   └── include/
-│       └── rnl.h       # C ABI header
+│   │   ├── lib.rs          # C ABI entry points
+│   │   ├── runtime.rs      # QuickJS setup + RNLNativeModule
+│   │   ├── bridge.rs       # Widget handle management
+│   │   ├── callbacks.rs    # Persistent JS function storage
+│   │   ├── registry.rs     # Element factory registry
+│   │   └── bin/headless.rs # Debug runner (no GTK needed)
+│   └── Cargo.toml
 ├── platforms/
-│   └── linux/          # GTK4 platform
+│   └── linux/              # GTK4 platform
 │       └── src/
 │           ├── main.rs
 │           ├── platform.rs
@@ -102,44 +50,89 @@ rnl/
 │               ├── box_element.rs
 │               ├── text_element.rs
 │               └── button_element.rs
-└── rnl-cli/            # Command line tool
+└── rnl-cli/                # `rnl` command
     └── src/
         └── commands/
-            └── build.rs # Build pipeline
+            ├── init.rs     # Project scaffolding + JS shim
+            └── build.rs    # Bundle + compile pipeline
 ```
 
-## Testing on a GTK4 Machine
+## How It Works
 
+### Render Flow
+1. `rnl build` bundles `src/index.tsx` → `target/bundle.js`
+2. App starts, QuickJS loads bundle
+3. React components call `jsx()` → virtual DOM objects
+4. `render()` walks VDOM, calls `RNLNativeModule.createNode()` etc.
+5. Bridge creates GTK widgets via element factories
+6. Widgets appended to root GtkBox → window displays
+
+### Callback Flow
+1. JS: `<button onClick={() => setCount(c + 1)} />`
+2. `setCallback(handle, "onClick", fn)` stores fn as `Persistent<Function>`
+3. GTK button `connect_clicked` fires on click
+4. Native calls `rnl_invoke_callback(callback_id)`
+5. Core restores Persistent, calls JS function
+6. useState updates state, re-renders UI
+
+## Debugging
+
+### Headless Mode (no display needed)
 ```bash
-# Clone and build
-git clone https://github.com/neutrino2211/rnl.git
-cd rnl
-
-# Install GTK4 (Ubuntu/Debian)
-sudo apt install libgtk-4-dev pkg-config
-
-# Build the framework
-cargo build --workspace
-
-# Create and run a test app
-./target/debug/rnl init counter-app --platforms linux
-cd counter-app
-../target/debug/rnl build --platform linux
-../target/debug/rnl run
+cargo build -p rnl-core --bin rnl-headless
+./target/debug/rnl-headless target/bundle.js
 ```
+
+Output:
+```
+[BRIDGE] createNode("box") -> 2
+[BRIDGE] setAttribute(2, "orientation", "vertical")
+[BRIDGE] appendChild(1, 2)
+...
+=== UI Tree ===
+ROOT
+  <box> [orientation="vertical"]
+    <text>
+      TEXT: "Welcome!"
+    <button> [label="+"]
+```
+
+### Verbose Logs
+```bash
+RUST_LOG=debug ./target/linux/my-app
+```
+
+## Supported Elements
+
+| Element | Props | Callbacks |
+|---------|-------|-----------|
+| `<box>` | orientation, spacing, margin*, halign, valign, hexpand, vexpand | — |
+| `<text>` | children (text content), selectable, wrap | — |
+| `<button>` | label, enabled/disabled, icon-name | onClick |
 
 ## Known Limitations
 
-1. **Callbacks not fully wired**: The callback system stores IDs but the actual JS function invocation from native code needs more work (requires storing QuickJS Function objects properly)
+1. **Naive re-rendering**: Full tree rebuilt on state change (no diffing yet)
+2. **No input element**: Text input not implemented
+3. **Style partial**: Only margin/padding/align from style prop
 
-2. **No re-render**: State changes in React don't trigger re-renders yet (needs reconciliation)
+## Bugs Fixed During M2
 
-3. **Style not fully implemented**: CSS-like style objects are partially supported
+1. **Blank window**: JSX shim captured `RNLNativeModule` at bundle load time before it was set. Fixed with lazy `getRNL()` accessor.
 
-## Future Work
+2. **Empty children**: `jsx()`/`jsxs()` were aliased to `createElement()` which expected rest args, but react-jsx transform passes children in props. Fixed with proper jsx/jsxs functions.
 
-- Wire up callback invocation (native → JS)
-- Implement React reconciliation for re-renders
-- Add more elements (input, scroll, etc.)
-- macOS platform (AppKit)
-- Windows platform (.NET)
+3. **Double appendChild**: Children were appended both inside `render()` and by parent loop. Fixed by passing `null` for child renders.
+
+4. **Root not found**: `__root__` type had no factory. Fixed by treating it as "box" type.
+
+5. **Callbacks not firing**: `rnl_invoke_callback` was a stub. Implemented with `Persistent<Function>` storage and proper invocation.
+
+## Next Steps (M3+)
+
+- [ ] Reconciliation (diff-based updates)
+- [ ] Input element
+- [ ] ScrollView
+- [ ] Image element
+- [ ] macOS platform (AppKit/Swift)
+- [ ] Hot reload
