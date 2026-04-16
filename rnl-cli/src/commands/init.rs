@@ -308,7 +308,11 @@ fn generate_rnl_shim() -> String {
     r#"// RNL Runtime Shim
 // This bridges React to native RNL components via RNLNativeModule
 
-const RNL = globalThis.RNLNativeModule || {};
+// Lazy accessor - RNLNativeModule must be accessed dynamically because
+// the bundle may be loaded before the native module is injected into globalThis
+function getRNL() {
+    return globalThis.RNLNativeModule || {};
+}
 
 // Simple hooks implementation for QuickJS
 let currentComponent = null;
@@ -404,6 +408,14 @@ export function createElement(type, props, ...children) {
 
 // Render function - walks VDOM and creates native widgets
 export function render(element, container) {
+    const RNL = getRNL();
+    
+    // Debug: verify RNLNativeModule is available
+    if (!globalThis.RNLNativeModule) {
+        console.error('RNLNativeModule not found in globalThis!');
+        console.log('globalThis keys:', Object.keys(globalThis));
+    }
+    
     if (element === null || element === undefined) return null;
     if (typeof element === 'string' || typeof element === 'number') {
         return RNL.createText?.(String(element));
