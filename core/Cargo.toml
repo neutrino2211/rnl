@@ -10,6 +10,10 @@ license = "MIT"
 name = "rnl"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "rnl-headless"
+path = "src/bin/headless.rs"
+
 [dependencies]
 # Using prebuilt bindings to avoid libclang dependency
 rquickjs = { version = "0.7", features = ["parallel", "allocator", "full-async", "macro"] }

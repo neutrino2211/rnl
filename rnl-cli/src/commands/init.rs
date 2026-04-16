@@ -402,19 +402,23 @@ export function useRef(initialValue) {
 }
 
 // Simple JSX runtime
+// createElement is for React.createElement() style (children as extra args)
 export function createElement(type, props, ...children) {
     return { type, props: { ...props, children: children.flat() } };
+}
+
+// jsx/jsxs are for react-jsx transform (children already in props)
+export function jsx(type, props, key) {
+    return { type, props, key };
+}
+
+export function jsxs(type, props, key) {
+    return { type, props, key };
 }
 
 // Render function - walks VDOM and creates native widgets
 export function render(element, container) {
     const RNL = getRNL();
-    
-    // Debug: verify RNLNativeModule is available
-    if (!globalThis.RNLNativeModule) {
-        console.error('RNLNativeModule not found in globalThis!');
-        console.log('globalThis keys:', Object.keys(globalThis));
-    }
     
     if (element === null || element === undefined) return null;
     if (typeof element === 'string' || typeof element === 'number') {
@@ -463,20 +467,20 @@ export function render(element, container) {
             }
         }
         
-        // Render children
+        // Render children - pass null as container so children don't auto-append
+        // We append them ourselves after render returns the handle
         const children = props.children || [];
         for (const child of Array.isArray(children) ? children : [children]) {
-            const childHandle = render(child, handle);
+            const childHandle = render(child, null);
             if (childHandle) {
                 RNL.appendChild?.(handle, childHandle);
             }
         }
     }
     
-    // Append to container or root
-    if (container) {
-        RNL.appendChild?.(container, handle);
-    } else {
+    // Only auto-append to root if this is a top-level render (no container)
+    // When container is null, we're being called for a child - parent handles append
+    if (container === undefined) {
         const root = RNL.getRootHandle?.();
         if (root) {
             RNL.appendChild?.(root, handle);
@@ -486,9 +490,7 @@ export function render(element, container) {
     return handle;
 }
 
-// JSX runtime exports (for react-jsx transform)
-export const jsx = createElement;
-export const jsxs = createElement;
+// Fragment just returns its children
 export const Fragment = ({ children }) => children;
 
 export default { useState, useEffect, useCallback, useMemo, useRef, createElement, render, jsx, jsxs, Fragment };
