@@ -201,10 +201,18 @@ impl NativeBridge {
             (parent.type_name.clone(), parent.ptr)
         };
 
-        let factory = match Registry::global().get(&parent_type) {
+        // Special case: __root__ is a GtkBox set by the platform
+        // We need to use the "box" factory's append_child for it
+        let effective_type = if parent_type == "__root__" {
+            "box".to_string()
+        } else {
+            parent_type
+        };
+
+        let factory = match Registry::global().get(&effective_type) {
             Some(f) => f,
             None => {
-                log::warn!("appendChild: unknown parent type '{}'", parent_type);
+                log::warn!("appendChild: unknown parent type '{}'", effective_type);
                 return;
             }
         };
