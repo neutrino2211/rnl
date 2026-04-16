@@ -258,29 +258,39 @@ impl NativeBridge {
     }
 
     fn remove_child(&mut self, parent_handle: i64, child_handle: i64) {
-        let parent = match self.widgets.get(&parent_handle) {
-            Some(w) => w,
+        let (parent_type, parent_ptr) = match self.widgets.get(&parent_handle) {
+            Some(w) => (w.type_name.clone(), w.ptr),
             None => {
                 log::warn!("removeChild: unknown parent handle {}", parent_handle);
                 return;
             }
         };
 
-        let child = match self.widgets.get(&child_handle) {
-            Some(w) => w,
+        let child_ptr = match self.widgets.get(&child_handle) {
+            Some(w) => w.ptr,
             None => {
                 log::warn!("removeChild: unknown child handle {}", child_handle);
                 return;
             }
         };
 
-        let factory = match Registry::global().get(&parent.type_name) {
+        // Treat __root__ as box
+        let effective_type = if parent_type == "__root__" {
+            "box".to_string()
+        } else {
+            parent_type
+        };
+
+        let factory = match Registry::global().get(&effective_type) {
             Some(f) => f,
-            None => return,
+            None => {
+                log::warn!("removeChild: unknown type {}", effective_type);
+                return;
+            }
         };
 
         if let Some(remove) = factory.remove_child {
-            remove(parent.ptr, child.ptr);
+            remove(parent_ptr, child_ptr);
         }
     }
 

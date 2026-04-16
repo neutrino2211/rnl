@@ -314,20 +314,30 @@ function getRNL() {
     return globalThis.RNLNativeModule || {};
 }
 
-// Simple hooks implementation for QuickJS
-let currentComponent = null;
-let hookIndex = 0;
-const componentStates = new WeakMap();
+// ============ Hooks Implementation ============
 
-function getComponentState() {
-    if (!componentStates.has(currentComponent)) {
-        componentStates.set(currentComponent, { hooks: [] });
+// Global render context
+let currentComponentId = 0;
+let hookIndex = 0;
+const componentStates = new Map(); // componentId -> { hooks: [], element: vdom }
+
+// Root render state for re-rendering
+let rootComponent = null;
+let rootElement = null;
+let rootHandle = null;
+let isRendering = false;
+let pendingRerender = false;
+
+function getComponentState(componentId) {
+    if (!componentStates.has(componentId)) {
+        componentStates.set(componentId, { hooks: [] });
     }
-    return componentStates.get(currentComponent);
+    return componentStates.get(componentId);
 }
 
 export function useState(initialValue) {
-    const state = getComponentState();
+    const componentId = currentComponentId;
+    const state = getComponentState(componentId);
     const idx = hookIndex++;
     
     if (state.hooks[idx] === undefined) {
@@ -336,14 +346,31 @@ export function useState(initialValue) {
     
     const setState = (newValue) => {
         const current = state.hooks[idx];
-        state.hooks[idx] = typeof newValue === 'function' ? newValue(current) : newValue;
-        // Trigger re-render
-        if (currentComponent && currentComponent.__rerender) {
-            currentComponent.__rerender();
+        const next = typeof newValue === 'function' ? newValue(current) : newValue;
+        
+        // Only re-render if value actually changed
+        if (next !== current) {
+            state.hooks[idx] = next;
+            scheduleRerender();
         }
     };
     
     return [state.hooks[idx], setState];
+}
+
+function scheduleRerender() {
+    if (isRendering) {
+        // Already rendering, mark for another pass
+        pendingRerender = true;
+        return;
+    }
+    
+    // Use setTimeout(0) to batch multiple setState calls
+    setTimeout(() => {
+        if (rootComponent && rootElement) {
+            rerender();
+        }
+    }, 0);
 }
 
 export function useEffect(effect, deps) {
@@ -416,8 +443,10 @@ export function jsxs(type, props, key) {
     return { type, props, key };
 }
 
-// Render function - walks VDOM and creates native widgets
-export function render(element, container) {
+// ============ Render Implementation ============
+
+// Internal render that creates widgets
+function renderElement(element) {
     const RNL = getRNL();
     
     if (element === null || element === undefined) return null;
@@ -429,19 +458,16 @@ export function render(element, container) {
     
     // Function component
     if (typeof type === 'function') {
-        const prevComponent = currentComponent;
+        // Each component instance gets a stable ID based on render order
+        const componentId = currentComponentId++;
         const prevHookIndex = hookIndex;
-        
-        const component = { fn: type, props };
-        currentComponent = component;
         hookIndex = 0;
         
         const result = type(props);
         
-        currentComponent = prevComponent;
         hookIndex = prevHookIndex;
         
-        return render(result, container);
+        return renderElement(result);
     }
     
     // Native element
@@ -456,7 +482,6 @@ export function render(element, container) {
         for (const [key, value] of Object.entries(props)) {
             if (key === 'children') continue;
             if (key.startsWith('on') && typeof value === 'function') {
-                // Keep the original event name (onClick, onChange, etc)
                 RNL.setCallback?.(handle, key, value);
             } else if (key === 'style' && typeof value === 'object') {
                 for (const [styleProp, styleVal] of Object.entries(value)) {
@@ -467,27 +492,86 @@ export function render(element, container) {
             }
         }
         
-        // Render children - pass null as container so children don't auto-append
-        // We append them ourselves after render returns the handle
+        // Render children
         const children = props.children || [];
         for (const child of Array.isArray(children) ? children : [children]) {
-            const childHandle = render(child, null);
+            const childHandle = renderElement(child);
             if (childHandle) {
                 RNL.appendChild?.(handle, childHandle);
             }
         }
     }
     
-    // Only auto-append to root if this is a top-level render (no container)
-    // When container is null, we're being called for a child - parent handles append
-    if (container === undefined) {
+    return handle;
+}
+
+// Clear all children from a container
+function clearContainer(containerHandle) {
+    const RNL = getRNL();
+    // We need a way to clear children - for now we'll rely on the platform
+    // to handle this via a special "clear" call or by tracking children
+    RNL.clearChildren?.(containerHandle);
+}
+
+// Re-render the root component
+function rerender() {
+    if (!rootComponent || !rootElement) return;
+    
+    const RNL = getRNL();
+    const root = RNL.getRootHandle?.();
+    if (!root) return;
+    
+    isRendering = true;
+    pendingRerender = false;
+    
+    // Reset component IDs for consistent hook ordering
+    currentComponentId = 0;
+    
+    // Remove old tree
+    if (rootHandle) {
+        RNL.removeChild?.(root, rootHandle);
+    }
+    
+    // Render new tree
+    rootHandle = renderElement(rootElement);
+    
+    // Append to root
+    if (rootHandle) {
+        RNL.appendChild?.(root, rootHandle);
+    }
+    
+    isRendering = false;
+    
+    // Check if another rerender was requested during this render
+    if (pendingRerender) {
+        scheduleRerender();
+    }
+}
+
+// Public render function - called once to mount the app
+export function render(element, container) {
+    const RNL = getRNL();
+    
+    // Store for re-renders
+    rootElement = element;
+    
+    isRendering = true;
+    currentComponentId = 0;
+    
+    // Initial render
+    rootHandle = renderElement(element);
+    
+    // Append to root container
+    if (rootHandle) {
         const root = RNL.getRootHandle?.();
         if (root) {
-            RNL.appendChild?.(root, handle);
+            RNL.appendChild?.(root, rootHandle);
         }
     }
     
-    return handle;
+    isRendering = false;
+    
+    return rootHandle;
 }
 
 // Fragment just returns its children
